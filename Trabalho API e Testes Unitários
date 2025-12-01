@@ -1,0 +1,182 @@
+from fastapi import FastAPI, HTTPException, status
+from pydantic import BaseModel, Field
+from typing import Dict, Optional
+
+# aplicação fastapi
+app = FastAPI(
+    title="API de Tarefas (To-Do List)",
+    description="API para realizar operações CRUD em uma lista de tarefas.",
+    version="1.0.0"
+)
+
+# modelo de dados da tarefa
+class Tarefa(BaseModel):
+    titulo: str = Field(..., min_length=3, description="Título da tarefa (mínimo 3 caracteres)")
+    descricao: Optional[str] = None
+    concluida: bool = False
+
+# banco de dados em memória
+db_tarefas: Dict[int, Tarefa] = {}
+
+# contador simples para gerar IDs automaticamente
+contador_id = 1
+
+
+# endpoints
+
+@app.get("/")
+def read_root():
+    """Endpoint raiz da API."""
+    return {"message": "Bem-vindo à API de Tarefas. Acesse /docs para a documentação interativa."}
+
+
+@app.get("/tarefas")
+def listar_tarefas():
+    """Retorna todas as tarefas cadastradas."""
+    return db_tarefas
+
+
+@app.get("/tarefas/{tarefa_id}")
+def pegar_tarefa(tarefa_id: int):
+    """Retorna uma tarefa específica pelo ID."""
+    if tarefa_id not in db_tarefas:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tarefa não encontrada")
+    return db_tarefas[tarefa_id]
+
+
+@app.post("/tarefas", status_code=status.HTTP_201_CREATED)
+def criar_tarefa(tarefa: Tarefa):
+    """Cria uma nova tarefa com ID gerado automaticamente."""
+    global contador_id
+
+    nova_tarefa_id = contador_id
+    contador_id += 1
+
+    db_tarefas[nova_tarefa_id] = tarefa
+
+    return {
+        "message": "Tarefa criada com sucesso!",
+        "id": nova_tarefa_id,
+        "tarefa": tarefa
+    }
+
+
+@app.put("/tarefas/{tarefa_id}")
+def atualizar_tarefa(tarefa_id: int, tarefa: Tarefa):
+    """Atualiza os dados de uma tarefa existente."""
+    if tarefa_id not in db_tarefas:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tarefa não encontrada")
+
+    db_tarefas[tarefa_id] = tarefa
+
+    return {
+        "message": "Tarefa atualizada com sucesso!",
+        "id": tarefa_id,
+        "tarefa": tarefa
+    }
+
+
+@app.delete("/tarefas/{tarefa_id}", status_code=status.HTTP_204_NO_CONTENT)
+def deletar_tarefa(tarefa_id: int):
+    """Deleta uma tarefa."""
+    if tarefa_id not in db_tarefas:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tarefa não encontrada")
+
+    del db_tarefas[tarefa_id]
+    return {"message": "Tarefa deletada com sucesso!"}
+
+#----------------------------- TESTES----------------------------
+from fastapi.testclient import TestClient
+from main import app, db
+
+client = TestClient(app)
+
+
+# limpeza antes de cada teste
+def setup_function():
+    db.clear()
+    # reset do next_id
+    import main
+    main.next_id = 1
+
+# testes criação
+
+def test_criar_tarefa_sucesso():
+    resposta = client.post("/tarefas", json={"titulo": "Comprar pão"})
+    assert resposta.status_code == 201
+    body = resposta.json()
+    assert body["id"] == 1
+    assert body["titulo"] == "Comprar pão"
+    assert body["concluida"] is False
+
+
+def test_criar_tarefa_sem_titulo():
+    resposta = client.post("/tarefas", json={"descricao": "Teste"})
+    assert resposta.status_code in (400, 422)
+
+# testes listagem
+
+def test_listar_sem_tarefas():
+    resposta = client.get("/tarefas")
+    assert resposta.status_code == 200
+    assert resposta.json() == []
+
+
+def test_listar_com_tarefas():
+    client.post("/tarefas", json={"titulo": "Tarefa 1"})
+    client.post("/tarefas", json={"titulo": "Tarefa 2"})
+    resposta = client.get("/tarefas")
+    assert resposta.status_code == 200
+    assert len(resposta.json()) == 2
+
+# testes busca ID
+
+def test_buscar_por_id_existente():
+    client.post("/tarefas", json={"titulo": "Tarefa 1"})
+    resposta = client.get("/tarefas/1")
+    assert resposta.status_code == 200
+    assert resposta.json()["titulo"] == "Tarefa 1"
+
+
+def test_buscar_por_id_inexistente():
+    resposta = client.get("/tarefas/999")
+    assert resposta.status_code == 404
+
+# Testes de Atualização
+
+def test_atualizar_tarefa_sucesso():
+    client.post("/tarefas", json={"titulo": "Original"})
+    resposta = client.put("/tarefas/1", json={
+        "titulo": "Atualizada",
+        "descricao": "Detalhes",
+        "concluida": True
+    })
+    assert resposta.status_code == 200
+    body = resposta.json()
+    assert body["titulo"] == "Atualizada"
+    assert body["concluida"] is True
+
+
+def test_atualizar_tarefa_inexistente():
+    resposta = client.put("/tarefas/999", json={
+        "titulo": "Inexistente",
+        "descricao": "Teste",
+        "concluida": False
+    })
+    assert resposta.status_code == 404
+
+# testes deleção
+
+def test_deletar_tarefa_sucesso():
+    client.post("/tarefas", json={"titulo": "Para deletar"})
+    resposta = client.delete("/tarefas/1")
+    assert resposta.status_code == 204
+
+    # confirmação de que foi removida
+    resposta = client.get("/tarefas/1")
+    assert resposta.status_code == 404
+
+
+def test_deletar_tarefa_inexistente():
+    resposta = client.delete("/tarefas/999")
+    assert resposta.status_code == 404
